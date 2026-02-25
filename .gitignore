@@ -78,5 +78,4 @@ coverage/
 *.temp
 
 # --- Local Documentation ---
-CLOUD_PLAN.md
-ISSUES_TEMPLATE.md
+agents/
