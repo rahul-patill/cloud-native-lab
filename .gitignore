@@ -76,3 +76,7 @@ coverage/
 # --- Temporary Files ---
 *.tmp
 *.temp
+
+# --- Local Documentation ---
+CLOUD_PLAN.md
+ISSUES_TEMPLATE.md
