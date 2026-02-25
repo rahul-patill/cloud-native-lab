@@ -76,3 +76,6 @@ coverage/
 # --- Temporary Files ---
 *.tmp
 *.temp
+
+# --- Local Documentation ---
+agents/
