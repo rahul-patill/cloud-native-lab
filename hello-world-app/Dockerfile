@@ -1,20 +1,39 @@
-# 1. Use Node.js as our base image (the environment)
-FROM node:20
-
-# 2. Create a folder inside the container for our app
+# ============================================
+# Stage 1: Install dependencies only
+# ============================================
+FROM node:20-alpine AS deps
 WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
 
-# 3. Copy everything from our current folder into the container
+# ============================================
+# Stage 2: Build the Next.js application
+# ============================================
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-
-# 4. Install the libraries defined in package.json
-RUN npm install
-
-# 5. Build the Next.js application for production
 RUN npm run build
 
-# 6. Open port 3000 for web traffic
-EXPOSE 3000
+# ============================================
+# Stage 3: Production runner (final image)
+# ============================================
+FROM node:20-alpine AS runner
+WORKDIR /app
 
-# 7. Start the application
-CMD ["npm", "start"]
+ENV NODE_ENV=production
+
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 nextjs
+
+COPY --from=builder /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+USER nextjs
+
+EXPOSE 3000
+ENV PORT=3000
+ENV HOSTNAME="0.0.0.0"
+
+CMD ["node", "server.js"]
