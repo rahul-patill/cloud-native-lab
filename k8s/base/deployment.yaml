@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello-world-app
+spec:
+  # deployment is a controller that manages the desired state of the application
+  selector:
+    matchLabels:
+      app: hello-world-app
+  # template is the blueprint for the pods that will be created by the deployment
+  template:
+    metadata:
+      labels:
+        app: hello-world-app
+    # spec is the specification for the pods that will be created by the deployment
+    spec:
+      containers:
+        - name: hello-world-app
+          image: ghcr.io/rahul-patill/cloud-native-lab/hello-world-app:latest
