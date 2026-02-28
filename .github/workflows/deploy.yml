@@ -22,9 +22,27 @@ name: Deploy to DigitalOcean Kubernetes
 # (we still check if CI succeeded inside the job).
 # ------------------------------------------------------
 on:
+  # Runs automatically AFTER CI finishes (only works once this file is on main)
   workflow_run:
-    workflows: ["Build and Push Docker Image to GHCR"]  # Must match the exact "name:" in build-push.yml
-    types: [completed]                                    # Fire after CI finishes (success or failure)
+    workflows: ["Build and Push Docker Image to GHCR"]
+    types: [completed]
+
+  # Allows you to manually run this workflow from ANY branch (including PR branch)
+  workflow_dispatch:
+    inputs:
+      namespace:
+        description: "Target namespace (dev or prod)"
+        required: true
+        default: "dev"
+        type: choice
+        options:
+          - dev
+          - prod
+      tag:
+        description: "Image tag to deploy (e.g., latest, feature-xyz)"
+        required: true
+        default: "latest"
+        type: string
 
 # ------------------------------------------------------
 # PERMISSIONS: We don't push packages here, just deploy.
