@@ -3,12 +3,13 @@ kind: Service
 metadata:
   name: hello-world-service
 spec:
-  # NodePort is used for local Minikube testing. 
-  # Change to LoadBalancer when moving to DigitalOcean.
-  type: NodePort 
+  # LoadBalancer type creates a public IP via the cloud provider (DigitalOcean).
+  # On Minikube, use "minikube service <name> -n <namespace>" to access it.
+  # On DigitalOcean, it auto-provisions a real load balancer with a public IP.
+  type: LoadBalancer
   selector:
     app: hello-world-app # Connects this service to pods with this label
   ports:
     - protocol: TCP
-      port: 80         # Port users visit (e.g., http://localhost)
+      port: 80         # Port users visit (e.g., http://<external-ip>)
       targetPort: 3000 # Port where the Next.js app is actually running
