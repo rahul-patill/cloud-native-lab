@@ -1,10 +1,10 @@
-name: Build and Push Docker Image to GHCR
+name: CI + Deploy to DOKS
 
 on:
-  push:
-    branches: [main]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
+  push:
+    branches: ["main"]
 
 permissions:
   contents: read
@@ -12,10 +12,12 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}/hello-world-app
+  IMAGE: ghcr.io/rahul-patill/cloud-native-lab/hello-world-app
+  CLUSTER_NAME: hello-world-cluster
 
 jobs:
-  build-and-push:
+  build:
+    name: Build and Push Image
     runs-on: ubuntu-latest
 
     steps:
@@ -29,22 +31,61 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-            type=ref,event=branch
-            type=ref,event=pr
-            type=raw,value=${{ github.head_ref }},enable=${{ github.event_name == 'pull_request' }}
-            type=sha,prefix=sha-
-
-      - name: Build and push Docker image
+      - name: Build and push (tag = commit SHA)
         uses: docker/build-push-action@v6
         with:
-          context: ./hello-world-app
+          context: .
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+
+  deploy:
+    name: Deploy to DOKS
+    runs-on: ubuntu-latest
+    needs: build
+
+    # Don't deploy if PR comes from a fork (secrets won't exist)
+    if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Determine namespace and tag
+        id: vars
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "NAMESPACE=dev" >> $GITHUB_OUTPUT
+          else
+            echo "NAMESPACE=prod" >> $GITHUB_OUTPUT
+          fi
+          echo "TAG=${{ github.sha }}" >> $GITHUB_OUTPUT
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Connect to DOKS cluster
+        run: doctl kubernetes cluster kubeconfig save ${{ env.CLUSTER_NAME }}
+
+      - name: Ensure namespace exists
+        run: kubectl apply -f k8s/overlays/${{ steps.vars.outputs.NAMESPACE }}/namespace.yaml
+
+      - name: Apply manifests
+        run: kubectl apply -f k8s/base/ -n ${{ steps.vars.outputs.NAMESPACE }}
+
+      - name: Set image
+        run: |
+          kubectl set image deployment/hello-world-app \
+            hello-world-app=${{ env.IMAGE }}:${{ steps.vars.outputs.TAG }} \
+            -n ${{ steps.vars.outputs.NAMESPACE }}
+
+      - name: Wait for rollout
+        run: kubectl rollout status deployment/hello-world-app -n ${{ steps.vars.outputs.NAMESPACE }} --timeout=180s
+
+      - name: Print status
+        run: |
+          kubectl get pods -n ${{ steps.vars.outputs.NAMESPACE }}
+          kubectl get svc -n ${{ steps.vars.outputs.NAMESPACE }}
