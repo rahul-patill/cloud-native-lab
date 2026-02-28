@@ -1,0 +1,177 @@
+# # -----------------------------------------------------------------------
+# # Deploy to DigitalOcean Kubernetes (DOKS)
+# # -----------------------------------------------------------------------
+# # This workflow ONLY runs after the CI pipeline (build-push.yml) finishes.
+# # It uses the "workflow_run" trigger so the Docker image is guaranteed
+# # to exist on GHCR before we try to deploy it.
+# #
+# # Flow:
+# #   build-push.yml finishes → this workflow starts → deploys to DOKS
+# #
+# # Namespace logic:
+# #   - CI was triggered by a PR        → deploy to "dev"  namespace
+# #   - CI was triggered by push to main → deploy to "prod" namespace
+# # -----------------------------------------------------------------------
+
+# name: Deploy to DigitalOcean Kubernetes
+
+# # ------------------------------------------------------
+# # TRIGGER: Run ONLY after the CI workflow completes.
+# # "workflow_run" waits for the named workflow to finish.
+# # "types: [completed]" means it fires when CI is done
+# # (we still check if CI succeeded inside the job).
+# # ------------------------------------------------------
+# on:
+#   # Runs automatically AFTER CI finishes (only works once this file is on main)
+#   workflow_run:
+#     workflows: ["Build and Push Docker Image to GHCR"]
+#     types: [completed]
+
+#   # Allows you to manually run this workflow from ANY branch (including PR branch)
+#   workflow_dispatch:
+#     inputs:
+#       namespace:
+#         description: "Target namespace (dev or prod)"
+#         required: true
+#         default: "dev"
+#         type: choice
+#         options:
+#           - dev
+#           - prod
+#       tag:
+#         description: "Image tag to deploy (e.g., latest, feature-xyz)"
+#         required: true
+#         default: "latest"
+#         type: string
+
+# # ------------------------------------------------------
+# # PERMISSIONS: We don't push packages here, just deploy.
+# # "contents: read" lets us checkout the repo.
+# # ------------------------------------------------------
+# permissions:
+#   contents: read
+
+# # ------------------------------------------------------
+# # ENVIRONMENT VARIABLES shared across all steps.
+# # IMAGE is the full GHCR path without a tag.
+# # CLUSTER_NAME must match the name you gave your DOKS cluster.
+# # ------------------------------------------------------
+# env:
+#   IMAGE: ghcr.io/rahul-patill/cloud-native-lab/hello-world-app
+#   CLUSTER_NAME: hello-world-cluster
+
+# jobs:
+#   deploy:
+#     runs-on: ubuntu-latest
+
+#     # --------------------------------------------------
+#     # GUARD: Only deploy if the CI workflow SUCCEEDED.
+#     # If CI failed (e.g. build error), skip the deploy
+#     # entirely — no point deploying a broken image.
+#     # --------------------------------------------------
+#     if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+#     steps:
+#       # ------------------------------------------------
+#       # Step 1: Checkout the repo
+#       # We need the k8s/ YAML files from our repository
+#       # so kubectl can apply them.
+#       # ------------------------------------------------
+#       - name: Checkout code
+#         uses: actions/checkout@v4
+
+#       # ------------------------------------------------
+#       # Step 2: Figure out WHICH namespace & image tag
+#       # to deploy based on what triggered the CI run.
+#       #
+#       # workflow_run gives us info about the CI run:
+#       # - event = "pull_request" → it was a PR → dev
+#       # - event = "push"         → it was a merge → prod
+#       #
+#       # For the image tag:
+#       # - PR   → use the branch name (e.g. "feature-xyz")
+#       # - Push → use "latest"
+#       # ------------------------------------------------
+#       - name: Determine namespace and image tag
+#         id: vars
+#         run: |
+#           EVENT="${{ github.event.workflow_run.event }}"
+#           echo "Triggering event: $EVENT"
+
+#           if [ "$EVENT" = "pull_request" ]; then
+#             # PR: deploy to dev namespace with the branch name as the tag
+#             echo "NAMESPACE=dev" >> $GITHUB_OUTPUT
+#             echo "TAG=${{ github.event.workflow_run.head_branch }}" >> $GITHUB_OUTPUT
+#           else
+#             # Push to main: deploy to prod namespace with "latest" tag
+#             echo "NAMESPACE=prod" >> $GITHUB_OUTPUT
+#             echo "TAG=latest" >> $GITHUB_OUTPUT
+#           fi
+
+#       # ------------------------------------------------
+#       # Step 3: Install doctl (DigitalOcean CLI)
+#       # This lets the runner talk to your DO account.
+#       # ------------------------------------------------
+#       - name: Install doctl
+#         uses: digitalocean/action-doctl@v2
+#         with:
+#           token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+#       # ------------------------------------------------
+#       # Step 4: Connect kubectl to your DOKS cluster
+#       # "kubeconfig save" downloads the credentials so
+#       # kubectl knows how to reach the cluster.
+#       # ------------------------------------------------
+#       - name: Connect to DOKS cluster
+#         run: doctl kubernetes cluster kubeconfig save ${{ env.CLUSTER_NAME }}
+
+#       # ------------------------------------------------
+#       # Step 5: Apply the Kubernetes manifests
+#       # This creates/updates the Deployment and Service
+#       # in the target namespace.
+#       # "-n" sets the namespace (dev or prod).
+#       # ------------------------------------------------
+#       - name: Apply Kubernetes manifests
+#         run: |
+#           echo "Deploying to namespace: ${{ steps.vars.outputs.NAMESPACE }}"
+#           kubectl apply -f k8s/base/ -n ${{ steps.vars.outputs.NAMESPACE }}
+
+#       # ------------------------------------------------
+#       # Step 6: Update the container image tag
+#       # "kubectl set image" tells the Deployment to use
+#       # a specific image tag (e.g. :latest or :feature-xyz).
+#       # This triggers a rolling update — Kubernetes pulls
+#       # the new image and restarts the pod.
+#       # ------------------------------------------------
+#       - name: Update container image
+#         run: |
+#           echo "Setting image tag to: ${{ steps.vars.outputs.TAG }}"
+#           kubectl set image deployment/hello-world-app \
+#             hello-world-app=${{ env.IMAGE }}:${{ steps.vars.outputs.TAG }} \
+#             -n ${{ steps.vars.outputs.NAMESPACE }}
+
+#       # ------------------------------------------------
+#       # Step 7: Wait for the rollout to complete
+#       # This blocks until the new pod is up and running.
+#       # If it fails (e.g. image not found, crash), this
+#       # step will fail and you'll see it in Actions.
+#       # --timeout=120s gives it 2 minutes max.
+#       # ------------------------------------------------
+#       - name: Wait for rollout
+#         run: |
+#           kubectl rollout status deployment/hello-world-app \
+#             -n ${{ steps.vars.outputs.NAMESPACE }} \
+#             --timeout=120s
+
+#       # ------------------------------------------------
+#       # Step 8: Print deployment status
+#       # Shows the pods and services so you can verify
+#       # everything is healthy right in the Actions log.
+#       # ------------------------------------------------
+#       - name: Print deployment status
+#         run: |
+#           echo "=== Pods ==="
+#           kubectl get pods -n ${{ steps.vars.outputs.NAMESPACE }}
+#           echo ""
+#           echo "=== Services ==="
+#           kubectl get services -n ${{ steps.vars.outputs.NAMESPACE }}
